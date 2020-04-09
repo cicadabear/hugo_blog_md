@@ -468,6 +468,202 @@ Sentinel自动发现其他的Sentinel的功能不再工作，因为它是基于S
 * Replicas are listed in the INFO output of a Redis master in a similar way: the address is detected by the master checking the remote peer of the TCP connection, while the port is advertised by the replica itself during the handshake, however the port may be wrong for the same reason as exposed in point 1.  
 Replicas被列出来在一个Redis master的INFO输出上，以一个类似的方法：IP地址被master探测通过检查连接的远程端，然而端口被replica自己通知在握手的时候，然而端口可能是错误的因为和上边第一点相同的原因。  
 
+Since Sentinels auto detect replicas using masters INFO output information, the detected replicas will not be reachable, and Sentinel will never be able to failover the master, since there are no good replicas from the point of view of the system, so there is currently no way to monitor with Sentinel a set of master and replica instances deployed with Docker, **unless you instruct Docker to map the port 1:1.**  
+
+既然Sentinel自动探测replica使用master的INFO输出信息，探测到的replica将不会可用，并且Sentinel将不会对master容错，既然从系统的角度看，这里没有好的replica, 所以这里目前Sentinel没法监控Docker部署的master和replica，除非你指示docker端口映射用相同的端口。
+
+For the first problem, in case you want to run a set of Sentinel instances using Docker with forwarded ports (or any other NAT setup where ports are remapped), you can use the following two Sentinel configuration directives in order to force Sentinel to announce a specific set of IP and port:  
+
+对于第一个问题，如果你想使用docker和端口映射，运行几个Sentinel实例（或者使用任何其他NAT设置，端口被重新映射了），你可以使用如下指令来强制Sentinel广播指定的IP和端口：  
+
+    sentinel announce-ip <ip>
+    sentinel announce-port <port>
+
+Note that Docker has the ability to run in host networking mode (check the ```--net=host``` option for more information). This should create no issues since ports are not remapped in this setup.  
+
+注意Docker有运行在宿主机网络的模式（检查```--net=host```这个选项来获取更多信息）。这个不会造成问题，因为端口没有被重新映射。
+
+## A quick tutorial  
+
+In the next sections of this document, all the details about Sentinel API, configuration and semantics will be covered incrementally. However for people that want to play with the system ASAP, this section is a tutorial that shows how to configure and interact with 3 Sentinel instances.  
+
+在这篇文档的下个章节，关于Sentinel API的所有细节，配置和语义将会覆盖到。然而对于想尽快使用这个系统的人，这个章节是一个教程，展示了怎用配置还有和3个Sentinel实例交互。  
+
+Here we assume that the instances are executed at port 5000, 5001, 5002. We also assume that you have a running Redis master at port 6379 with a replica running at port 6380. We will use the IPv4 loopback address 127.0.0.1 everywhere during the tutorial, assuming you are running the simulation on your personal computer.  
+
+这里我们假设，这些实例运行在5000，5001，5002端口。我们还假设你有一个正在6379端口运行的Redis master 还有一个运行在6380端口的replica. 我们将会使用IPv4 loopback地址127.0.0.1在这个教程的每个地方，假设你在你的个人电脑上运行这个模拟。  
+
+The three Sentinel configuration files should look like the following:  
+
+这三个Sentinel配置文件，应该像这样，如下：  
+
+```
+port 5000
+sentinel monitor mymaster 127.0.0.1 6379 2
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 60000
+sentinel parallel-syncs mymaster 1
+```
+
+The other two configuration files will be identical but using 5001 and 5002 as port numbers.  
+
+另外两个配置文件将会事相同的，除了用的端口事5001和5002之外。  
+
+A few things to note about the above configuration:  
+
+关于上述配置需要注意的几件事：  
+
+* The master set is called ```mymaster```. It identifies the master and its replicas. Since each master set has a different name, Sentinel can monitor different sets of masters and replicas at the same time.  
+这个master叫作```mymaster```. 这个名字识别出master和它的replicas。因为每个master组都有不同的名字，Sentinel可以同时监控不同的master，replica组。
+
+* The quorum was set to the value of 2 (last argument of ```sentinel monitor``` configuration directive).  
+这个quorum设置的值是2（```sentinel monitor最后一个参数```）。  
+
+* The ```down-after-milliseconds``` value is 5000 milliseconds, that is 5 seconds, so masters will be detected as failing as soon as we don't receive any reply from our pings within this amount of time.  
+这个```down-after-milliseconds```的值是5000ms，这是5秒，所以master实例将会被探测为失败只要我们没有在这个时间内收到回应。
+
+Once you start the three Sentinels, you'll see a few messages they log, like:  
+
+一旦你启动了三个Sentinel, 你将会看到打印的几个信息，像这样：  
+
+    +monitor master mymaster 127.0.0.1 6379 quorum 2
+
+This is a Sentinel event, and you can receive this kind of events via Pub/Sub if you [SUBSCRIBE](https://redis.io/commands/subscribe) to the event name as specified later.   
+
+这是一个Sentinel事件，并且你可以接收这类事件，通过发布和订阅，如果你像后边一样订阅了事件。  
+
+Sentinel generates and logs different events during failure detection and failover.  
+
+Sentinel生成并且日志输出不同的事件，当探测到错误和容错的时候。  
+
+## Asking Sentinel about the state of a master  
+
+## 从Sentinel询问一个master实例的状态  
+
+The most obvious thing to do with Sentinel to get started, is check if the master it is monitoring is doing well:  
+
+最明显的要做的事来开始Sentinel, 是检查是否Sentinel监控的master运行良好：  
+
+```
+$ redis-cli -p 5000
+127.0.0.1:5000> sentinel master mymaster
+ 1) "name"
+ 2) "mymaster"
+ 3) "ip"
+ 4) "127.0.0.1"
+ 5) "port"
+ 6) "6379"
+ 7) "runid"
+ 8) "953ae6a589449c13ddefaee3538d356d287f509b"
+ 9) "flags"
+10) "master"
+11) "link-pending-commands"
+12) "0"
+13) "link-refcount"
+14) "1"
+15) "last-ping-sent"
+16) "0"
+17) "last-ok-ping-reply"
+18) "735"
+19) "last-ping-reply"
+20) "735"
+21) "down-after-milliseconds"
+22) "5000"
+23) "info-refresh"
+24) "126"
+25) "role-reported"
+26) "master"
+27) "role-reported-time"
+28) "532439"
+29) "config-epoch"
+30) "1"
+31) "num-slaves"
+32) "1"
+33) "num-other-sentinels"
+34) "2"
+35) "quorum"
+36) "2"
+37) "failover-timeout"
+38) "60000"
+39) "parallel-syncs"
+40) "1"
+```  
+As you can see, it prints a number of information about the master. There are a few that are of particular interest for us:  
+
+正如你所看到的，它打印出了一些master的信息。这里有几个特别感兴趣的：  
+
+1. ```num-other-sentinels``` is 2, so we know the Sentinel already detected two more Sentinels for this master. If you check the logs you'll see the ```+sentinel``` events generated.  
+ ```num-other-sentinels```是2，所以我们知道Sentinel已经探测到另外两个Sentinel对这个master. 如果你检查日志，你将会看到 生成了```+sentinel```事件。  
+
+2. ```flags``` is just ```master```. If the master was down we could expect to see ```s_down``` or ```o_down``` flag as well here.
+```flags```就只是```master```。如果master挂了，我们可以期待在这里看到```s_down``` 或者 ```o_down```。
+    
+3. ```num-slaves``` is correctly set to 1, so Sentinel also detected that there is an attached replica to our master.
+```num-slaves```正确的设置成了1，所以Sentinel也探测到这里有一个replica实例。  
+
+In order to explore more about this instance, you may want to try the following two commands:  
+
+为了探索跟多关于这个实例，你可能想要尝试以下命令：  
+
+```
+SENTINEL slaves mymaster
+SENTINEL sentinels mymaster
+```  
+
+The first will provide similar information about the replicas connected to the master, and the second about the other Sentinels.    
+
+第一个命令将会提供关于连接到这个master的replica的相似的信息，第二个命令是关于其他Sentinel的。  
+
+### Obtaining the address of the current master  
+
+### 获取当前master的地址  
+
+As we already specified, Sentinel also acts as a configuration provider for clients that want to connect to a set of master and replicas. Because of possible failovers or reconfigurations, clients have no idea about who is the currently active master for a given set of instances, so Sentinel exports an API to ask this question:  
+
+正如我们详细说明过的，Sentinel还可以作为配置provider对于想连接到一组master和replica的客户端。由于可能的失败或者重新配置，客户端不知道现在谁是有效的master对于一组实例，所以Sentinel暴露一个API来问这个问题：  
+
+```
+127.0.0.1:5000> SENTINEL get-master-addr-by-name mymaster
+1) "127.0.0.1"
+2) "6379"
+```  
+
+### Testing the failover  
+### 测试容错  
+
+At this point our toy Sentinel deployment is ready to be tested. We can just kill our master and check if the configuration changes. To do so we can just do:  
+
+这时候我们的玩具Sentinel部署已经准备好测试了。我们可以kill掉我们的master并且检查是否配置改变了。为实现这个，我这么做：  
+
+    redis-cli -p 6379 DEBUG sleep 30 
+
+This command will make our master no longer reachable, sleeping for 30 seconds. It basically simulates a master hanging for some reason.  
+
+这个命令将会使得master不再可访问，sleep 30秒。这基本上模拟了一个master因为某些原因挂起。  
+
+If you check the Sentinel logs, you should be able to see a lot of action:  
+如果你检查Sentinel的日志，你应该能看到很多action:  
+
+1. Each Sentinel detects the master is down with an ```+sdown``` event.  
+每个Sentinel探测到master挂了，并生成一个```+sdown```事件。  
+
+2. This event is later escalated to ```+odown```, which means that multiple Sentinels agree about the fact the master is not reachable.  
+这个事件之后升级为```+odown```, 这里的意思是多个Sentinel同意了master不可访问的事实。  
+
+3. Sentinels vote a Sentinel that will start the first failover attempt.  
+Setinels投票一个Sentinel, 这个选出的Sentinel将会开始第一次容错尝试。  
+
+4. The failover happens.  
+容错开始。  
+
+
+
+
+
+
+
+
+
 
 
 
